@@ -13,6 +13,8 @@ UINT const WMAPP_NOTIFYCALLBACK = WM_APP + 1;
 wchar_t const szWindowClass[] = L"Audio Meter";
 // Use a guid to uniquely identify our icon
 class __declspec(uuid("3a8a77d4-1d6e-434b-8a88-11a5dd4aeca2")) NotifIcon;
+HWND main_hwnd = NULL;
+CHANNELS old_channel = PADDING;
 
 int APIENTRY wWinMain(
     _In_ HINSTANCE hInstance,
@@ -42,8 +44,8 @@ int APIENTRY wWinMain(
 
     // Create the main window. This could be a hidden window if you don't need
     // any UI other than the notification icon.
-    HWND hwnd = CreateWindow(szWindowClass, szWindowClass, 0, 0, 0, 0, 0, 0, 0, g_hInst, 0);
-    if (hwnd)
+    main_hwnd = CreateWindow(szWindowClass, szWindowClass, 0, 0, 0, 0, 0, 0, 0, g_hInst, 0);
+    if (main_hwnd)
         MainLoop();
 
     return 0;
@@ -120,8 +122,9 @@ void MainLoop()
             break;
         }
 
-        StoreChannels(channel_id, pClient.ShouldForce());
-        UpdateIcon(channel_id);
+        bool force = pClient.ShouldForce();
+        StoreChannels(channel_id, force);
+        UpdateIcon(channel_id, force);
     }
 }
 
@@ -184,18 +187,19 @@ BOOL AddIcon(HWND hwnd)
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_GUID;
     nid.guidItem = __uuidof(NotifIcon);
     nid.uCallbackMessage = WMAPP_NOTIFYCALLBACK;
-    LoadIconMetric(g_hInst, MAKEINTRESOURCE(IDI_NOTIFICATIONICONIDX + (int)STEREO), LIM_SMALL, &nid.hIcon);
-    Shell_NotifyIcon(NIM_ADD, &nid);
+    LoadIconMetric(g_hInst, MAKEINTRESOURCE(IDI_NOTIFICATIONICONIDX + (int)old_channel), LIM_SMALL, &nid.hIcon);
+    BOOL ret = Shell_NotifyIcon(NIM_ADD, &nid);
+    if (ret != TRUE)
+        return FALSE;
 
     // NOTIFYICON_VERSION_4 is prefered
     nid.uVersion = NOTIFYICON_VERSION_4;
     return Shell_NotifyIcon(NIM_SETVERSION, &nid);
 }
 
-void UpdateIcon(CHANNELS channel)
+void UpdateIcon(CHANNELS channel, bool force)
 {
-    static CHANNELS old_channel = PADDING;
-    if (channel == old_channel)
+    if (channel == old_channel && !force)
         return;
 
     int IDX = (int)channel + IDI_NOTIFICATIONICONIDX;
@@ -208,7 +212,11 @@ void UpdateIcon(CHANNELS channel)
         return;
     BOOL ret = Shell_NotifyIcon(NIM_MODIFY, &nid);
     if (ret != TRUE)
+    {
+        DeleteIcon();
+        AddIcon(main_hwnd);
         return;
+    }
 
     old_channel = channel;
 }

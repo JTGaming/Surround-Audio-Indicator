@@ -33,11 +33,11 @@ void                RegisterWindowClass(PCWSTR pszClassName, WNDPROC lpfnWndProc
 LRESULT CALLBACK    WndProc(HWND, UINT, WPARAM, LPARAM);
 void                ShowContextMenu(HWND hwnd);
 BOOL                AddIcon(HWND hwnd);
-void                UpdateIcon(CHANNELS channel);
+void                UpdateIcon(CHANNELS channel, bool force = false);
 BOOL                DeleteIcon();
 void                MainLoop();
 CHANNELS            CheckChannels(UINT channels, const std::vector<float>& peaks);
-void                StoreChannels(CHANNELS& channel_id, bool force);
+void                StoreChannels(CHANNELS& channel_id, bool force = false);
 
 // The notification client class
 class NotificationClient : public IMMNotificationClient {
