@@ -14,7 +14,7 @@ wchar_t const szWindowClass[] = L"Audio Meter";
 // Use a guid to uniquely identify our icon
 class __declspec(uuid("3a8a77d4-1d6e-434b-8a88-11a5dd4aeca2")) NotifIcon;
 HWND main_hwnd = NULL;
-CHANNELS old_channel = PADDING;
+CHANNELS old_channel = STEREO;
 
 int APIENTRY wWinMain(
     _In_ HINSTANCE hInstance,
