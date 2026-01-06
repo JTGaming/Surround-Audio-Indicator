@@ -15,6 +15,8 @@ wchar_t const szWindowClass[] = L"Audio Meter";
 class __declspec(uuid("3a8a77d4-1d6e-434b-8a88-11a5dd4aeca2")) NotifIcon;
 HWND main_hwnd = NULL;
 CHANNELS old_channel = STEREO;
+std::shared_mutex audioMutex;
+std::chrono::steady_clock::time_point now_time;
 
 int APIENTRY wWinMain(
     _In_ HINSTANCE hInstance,
@@ -56,13 +58,14 @@ void MainLoop()
     NotificationClient pClient;
 
     std::vector<float> peaks{};
-    UINT channels = 0;
+    UINT meterChannels = 0;
     CHANNELS channel_id = INVALID;
 
     bool CanRun = true;
     while (CanRun)
     {
-        Sleep(500);
+        Sleep(50);
+        std::shared_lock lock(audioMutex);
 
         MSG msg;
         while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
@@ -80,16 +83,15 @@ void MainLoop()
             UpdateIcon(INVALID);
             continue;
         }
-
-        HRESULT hr = pMeterInfo->GetMeteringChannelCount(&channels);
-        if (hr != S_OK)
+        IAudioClient* pAudioClient = pClient.GetAudioClient();
+        if (!pAudioClient)
         {
             UpdateIcon(INVALID);
             continue;
         }
 
         float volume{};
-        hr = pMeterInfo->GetPeakValue(&volume);
+        HRESULT hr = pMeterInfo->GetPeakValue(&volume);
         if (hr != S_OK)
         {
             UpdateIcon(INVALID);
@@ -99,7 +101,13 @@ void MainLoop()
         if (volume <= CUST_FLT_EPS)
             continue;
 
-        switch (channels)
+        DWORD mixFormatChannels;
+        const std::vector<DWORD>* channelMap{};
+        pClient.GetMixInfo(mixFormatChannels, channelMap);
+
+        now_time = std::chrono::high_resolution_clock::now();
+
+        switch (mixFormatChannels)
         {
         case 1:
             channel_id = MONO;
@@ -110,15 +118,23 @@ void MainLoop()
             break;
 
         default:
-            peaks.resize(channels);
-            hr = pMeterInfo->GetChannelsPeakValues(channels, peaks.data());
+            meterChannels = pClient.GetMeteringChannelCount();
+
+            if (peaks.size() != meterChannels)
+                peaks.resize(meterChannels);
+            hr = pMeterInfo->GetChannelsPeakValues(meterChannels, peaks.data());
             if (hr != S_OK)
             {
                 UpdateIcon(INVALID);
                 continue;
             }
 
-            channel_id = CheckChannels(channels, peaks);
+
+            if (mixFormatChannels == meterChannels)
+                channel_id = CheckChannelsMix(meterChannels, peaks, channelMap);
+            else
+				channel_id = CheckChannels(meterChannels, peaks);
+
             break;
         }
 
@@ -130,38 +146,142 @@ void MainLoop()
 
 CHANNELS CheckChannels(UINT channels, const std::vector<float>& peaks)
 {
-    if (channels <= STEREO || channels >= INVALID || channels != peaks.size())
+    if (channels <= PADDING || channels >= INVALID || channels != peaks.size())
         return INVALID;
 
-    CHANNELS max_channel = STEREO;
-    for (int idx = STEREO; idx < peaks.size(); idx++)
+    constexpr CHANNELS valid_channels[] = {
+        INVALID,
+        STEREO,
+        STEREO,
+        THREEOH,
+        TWOONE,
+        FIVEONE,
+        FIVEONE,
+        SEVENONE,
+        SEVENONE,
+        INVALID
+	};
+
+    CHANNELS max_channel = PADDING;
+    for (int idx = max_channel; idx < peaks.size(); idx++)
     {
         if (peaks[idx] > CUST_FLT_EPS)
-            max_channel = (CHANNELS)(idx + 1);
+            max_channel = valid_channels[idx + 1];
     }
 
     return max_channel;
 }
 
+CHANNELS CheckChannelsMix(UINT meterChannels, const std::vector<float>& meterPeaks, const std::vector<DWORD>* channelMap)
+{
+    if (meterChannels <= PADDING || meterChannels >= INVALID || meterChannels != meterPeaks.size())
+        return INVALID;
+
+    CHANNELS playing_channels = INVALID;
+
+    constexpr float HOLD_TIME = 1.0f;
+    static std::vector<std::chrono::time_point<std::chrono::high_resolution_clock>> lastActiveTime(9);
+
+    enum SPEAKER_IDX
+    {
+        FL = 0,
+        FR,
+        FC,
+        LFE,
+        BL,
+        BR,
+        BC,
+        SL,
+        SR
+    };
+
+    static const std::unordered_map<DWORD, SPEAKER_IDX> SpeakerToIndex =
+    {
+        { SPEAKER_FRONT_LEFT,              FL },
+        { SPEAKER_FRONT_LEFT_OF_CENTER,    FL },
+
+        { SPEAKER_FRONT_RIGHT,             FR },
+        { SPEAKER_FRONT_RIGHT_OF_CENTER,   FR },
+
+        { SPEAKER_FRONT_CENTER,            FC },
+        { SPEAKER_LOW_FREQUENCY,           LFE },
+
+        { SPEAKER_BACK_LEFT,               BL },
+        { SPEAKER_BACK_RIGHT,              BR },
+        { SPEAKER_BACK_CENTER,             BC },
+
+        { SPEAKER_SIDE_LEFT,               SL },
+        { SPEAKER_SIDE_RIGHT,              SR }
+    };
+
+    auto updateActivity = [](size_t index) {
+        lastActiveTime[index] = now_time;
+        };
+
+    auto isActive = [](size_t index) {
+        auto duration = std::chrono::duration<float>(now_time - lastActiveTime[index]).count();
+        return duration <= HOLD_TIME;
+        };
+
+    for (UINT i = 0; i < meterChannels; ++i)
+    {
+        if (meterPeaks[i] <= CUST_FLT_EPS)
+            continue;
+
+        auto it = SpeakerToIndex.find(channelMap->at(i));
+        if (it != SpeakerToIndex.end())
+            updateActivity(it->second);
+    }
+
+    if (isActive(SL) || isActive(SR))
+    {
+        if (meterChannels >= 8)
+            playing_channels = SEVENONE;
+        else if (meterChannels >= 6)
+            playing_channels = FIVEONE;
+    }
+    else if (isActive(BL) || isActive(BR))
+    {
+        if (meterChannels >= 6)
+            playing_channels = FIVEONE;
+        else if (meterChannels >= 4)
+            playing_channels = (isActive(LFE) ? FOURONE : FOUROH);
+    }
+    else if (isActive(BC))
+        playing_channels = (isActive(LFE) ? FOURONE : FOUROH);
+    else if (isActive(FL) || isActive(FR))
+    {
+        if (isActive(FC))
+            playing_channels = (isActive(LFE) ? THREEONE : THREEOH);
+        else
+            playing_channels = (isActive(LFE) ? TWOONE : STEREO);
+    }
+    else if (isActive(FC))
+        playing_channels = MONO;
+    else if (isActive(LFE))
+		playing_channels = MONO;
+
+    return playing_channels;
+}
+
 void StoreChannels(CHANNELS& channel_id, bool force)
 {
     static CHANNELS saved_channels = PADDING;
-    static auto start_time = std::chrono::high_resolution_clock::now();
+    static auto start_time = now_time;
 
     if (channel_id >= saved_channels)
     {
         saved_channels = channel_id;
-        start_time = std::chrono::high_resolution_clock::now();
+        start_time = now_time;
     }
     else
     {
-        auto end_time = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<float, std::milli> delta_time_ms = end_time - start_time;
+        std::chrono::duration<float, std::milli> delta_time_ms = now_time - start_time;
 
         if (delta_time_ms.count() > 10000 || force)
         {
             saved_channels = channel_id;
-            start_time = end_time;
+            start_time = now_time;
         }
         else
             channel_id = saved_channels;
@@ -189,7 +309,7 @@ BOOL AddIcon(HWND hwnd)
     nid.uCallbackMessage = WMAPP_NOTIFYCALLBACK;
     LoadIconMetric(g_hInst, MAKEINTRESOURCE(IDI_NOTIFICATIONICONIDX + (int)old_channel), LIM_SMALL, &nid.hIcon);
     BOOL ret = Shell_NotifyIcon(NIM_ADD, &nid);
-    if (ret != TRUE)
+    if (ret == FALSE)
         return FALSE;
 
     // NOTIFYICON_VERSION_4 is prefered
@@ -211,7 +331,7 @@ void UpdateIcon(CHANNELS channel, bool force)
     if (hr != S_OK)
         return;
     BOOL ret = Shell_NotifyIcon(NIM_MODIFY, &nid);
-    if (ret != TRUE)
+    if (ret == FALSE)
     {
         DeleteIcon();
         AddIcon(main_hwnd);

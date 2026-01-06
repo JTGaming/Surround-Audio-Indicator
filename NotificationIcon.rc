@@ -31,9 +31,10 @@ IDI_NOTIFICATIONICON3       ICON         "Icons\\Icon3.ico"
 IDI_NOTIFICATIONICON4       ICON         "Icons\\Icon4.ico"
 IDI_NOTIFICATIONICON5       ICON         "Icons\\Icon5.ico"
 IDI_NOTIFICATIONICON6       ICON         "Icons\\Icon6.ico"
-IDI_NOTIFICATIONICON7       ICON         "Icons\\Icon8.ico"
-IDI_NOTIFICATIONICON8       ICON         "Icons\\Icon7.ico"
-IDI_NOTIFICATIONICON9       ICON         "Icons\\Icon8.ico"
+IDI_NOTIFICATIONICON7       ICON         "Icons\\Icon7.ico"
+IDI_NOTIFICATIONICON8       ICON         "Icons\\Icon8.ico"
+IDI_NOTIFICATIONICON9       ICON         "Icons\\Icon9.ico"
+IDI_NOTIFICATIONICON10      ICON         "Icons\\Icon10.ico"
 
 /////////////////////////////////////////////////////////////////////////////
 //
