@@ -105,7 +105,7 @@ void MainLoop()
         const std::vector<DWORD>* channelMap{};
         pClient.GetMixInfo(mixFormatChannels, channelMap);
 
-        now_time = std::chrono::high_resolution_clock::now();
+        now_time = std::chrono::steady_clock::now();
 
         switch (mixFormatChannels)
         {
@@ -131,7 +131,7 @@ void MainLoop()
 
 
             if (mixFormatChannels == meterChannels)
-                channel_id = CheckChannelsMix(meterChannels, peaks, channelMap);
+                channel_id = CheckChannelsMixV2(meterChannels, peaks, channelMap);
             else
 				channel_id = CheckChannels(meterChannels, peaks);
 
@@ -166,10 +166,141 @@ CHANNELS CheckChannels(UINT channels, const std::vector<float>& peaks)
     for (int idx = max_channel; idx < peaks.size(); idx++)
     {
         if (peaks[idx] > CUST_FLT_EPS)
-            max_channel = valid_channels[idx + 1];
+            max_channel = valid_channels[idx + 1]; //-V557
     }
 
     return max_channel;
+}
+
+bool isPowerOfTwo(uint32_t x)
+{
+    return (x & (x - 1)) == 0;
+}
+
+constexpr SPEAKER_IDX SpeakerToIndex(DWORD speaker)
+{
+    switch (speaker)
+    {
+    case SPEAKER_FRONT_LEFT:
+    case SPEAKER_FRONT_LEFT_OF_CENTER:
+        return FL;
+
+    case SPEAKER_FRONT_RIGHT:
+    case SPEAKER_FRONT_RIGHT_OF_CENTER:
+        return FR;
+
+    case SPEAKER_FRONT_CENTER:
+        return FC;
+
+    case SPEAKER_LOW_FREQUENCY:
+        return LFE;
+
+    case SPEAKER_BACK_LEFT:
+        return BL;
+
+    case SPEAKER_BACK_RIGHT:
+        return BR;
+
+    case SPEAKER_BACK_CENTER:
+        return BC;
+
+    case SPEAKER_SIDE_LEFT:
+        return SL;
+
+    case SPEAKER_SIDE_RIGHT:
+        return SR;
+
+    default:
+        return SPEAKER_COUNT; // invalid
+    }
+}
+
+CHANNELS CheckChannelsMixV2(UINT meterChannels, const std::vector<float>& meterPeaks, const std::vector<DWORD>* channelMap)
+{
+    if (meterChannels <= PADDING || meterChannels >= INVALID || meterChannels != meterPeaks.size())
+        return INVALID;
+
+    constexpr float HOLD_TIME = 5.0f;
+    static std::array<std::chrono::time_point<std::chrono::steady_clock>, SPEAKER_COUNT> lastActiveTime{};
+
+    auto updateActivity = [](size_t index) {
+        lastActiveTime[index] = now_time;
+        };
+
+    auto isActive = [](size_t index) {
+        auto duration = std::chrono::duration<float>(now_time - lastActiveTime[index]).count();
+        return duration <= HOLD_TIME;
+        };
+
+    for (UINT i = 0; i < meterChannels; ++i)
+    {
+        if (meterPeaks[i] <= CUST_FLT_EPS)
+            continue;
+
+        auto idx = SpeakerToIndex(channelMap->at(i));
+        if (idx != SPEAKER_COUNT)
+            updateActivity(idx);
+    }
+
+    static const std::array<std::pair<CHANNELS, std::vector<std::vector<SPEAKER_IDX>>>, INVALID - 1> possible_channels({
+        { MONO,     {{FC}, {LFE}}},
+        { STEREO,   {{FL, FR}}},
+        { TWOONE,   {{FL, FR, LFE}}},
+        { THREEOH,  {{FL, FR, FC}}},
+        { THREEONE, {{FL, FR, FC, LFE}}},
+
+        { FOUROH,   {{FL, FR}, {BL, BR}, {SL, SR}, {FC, BC}} },
+        { FOURONE,  {{FL, FR, LFE}, {BL, BR}, {SL, SR}, {FC, BC}} },
+        { FIVEOH,  {{FL, FR, FC}, {BL, BR}, {SL, SR}} },
+        { FIVEONE,  {{FL, FR, FC, LFE}, {BL, BR}, {SL, SR}} },
+        { SIXOH,  {{FL, FR, FC, BC}, {BL, BR}, {SL, SR}} },
+        { SIXONE,  {{FL, FR, FC, LFE, BC}, {BL, BR}, {SL, SR}} },
+
+        { SEVENOH,  {{FL, FR, FC, BL, BR, SL, SR}}},
+        { SEVENONE, {{FL, FR, FC, LFE, BL, BR, SL, SR}}}
+    });
+
+    std::array<uint32_t, INVALID - 1> found_groups({});
+    std::array<bool, INVALID - 1> delete_channels({});
+
+    for (int idx = SPEAKER_COUNT - 1; idx >= 0; --idx)
+    {
+        if (!isActive(idx))
+			continue;
+
+		uint32_t channel_idx = 0;
+        for (const auto& [channel_type, speaker_groups] : possible_channels)
+        {
+            if (delete_channels[channel_idx])
+            {
+                channel_idx++;
+                continue;
+			}
+
+            uint32_t group_idx = 0;
+            bool found = false;
+            for (const auto& group : speaker_groups)
+            {
+                if (std::find(group.begin(), group.end(), idx) != group.end())
+                {
+                    found = true;
+                    if (group_idx != 0)
+                        found_groups[channel_idx] |= (1u << group_idx);
+                    break;
+                }
+                group_idx++;
+            }
+
+            if (!found || !isPowerOfTwo(found_groups[channel_idx]))
+                delete_channels.at(channel_idx) = true;
+            channel_idx++;
+		}
+    }
+
+    for (int i = 0; i < INVALID - 1; ++i)
+        if (!delete_channels[i])
+			return possible_channels[i].first;
+     return INVALID;
 }
 
 CHANNELS CheckChannelsMix(UINT meterChannels, const std::vector<float>& meterPeaks, const std::vector<DWORD>* channelMap)
@@ -179,21 +310,8 @@ CHANNELS CheckChannelsMix(UINT meterChannels, const std::vector<float>& meterPea
 
     CHANNELS playing_channels = INVALID;
 
-    constexpr float HOLD_TIME = 1.0f;
-    static std::vector<std::chrono::time_point<std::chrono::high_resolution_clock>> lastActiveTime(9);
-
-    enum SPEAKER_IDX
-    {
-        FL = 0,
-        FR,
-        FC,
-        LFE,
-        BL,
-        BR,
-        BC,
-        SL,
-        SR
-    };
+    constexpr float HOLD_TIME = 5.0f;
+    static std::vector<std::chrono::time_point<std::chrono::steady_clock>> lastActiveTime(SPEAKER_COUNT);
 
     static const std::unordered_map<DWORD, SPEAKER_IDX> SpeakerToIndex =
     {
@@ -259,7 +377,7 @@ CHANNELS CheckChannelsMix(UINT meterChannels, const std::vector<float>& meterPea
     else if (isActive(FC))
         playing_channels = MONO;
     else if (isActive(LFE))
-		playing_channels = MONO;
+        playing_channels = MONO;
 
     return playing_channels;
 }
@@ -304,16 +422,17 @@ BOOL AddIcon(HWND hwnd)
     nid.hWnd = hwnd;
     // add the icon, setting the icon, tooltip, and callback message.
     // the icon will be identified with the GUID
-    nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_GUID;
+    nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_GUID | NIF_TIP;
     nid.guidItem = __uuidof(NotifIcon);
     nid.uCallbackMessage = WMAPP_NOTIFYCALLBACK;
     LoadIconMetric(g_hInst, MAKEINTRESOURCE(IDI_NOTIFICATIONICONIDX + (int)old_channel), LIM_SMALL, &nid.hIcon);
+    wcscpy_s(nid.szTip, szWindowClass);
+
     BOOL ret = Shell_NotifyIcon(NIM_ADD, &nid);
-    if (ret == FALSE)
+    if (ret != TRUE)
         return FALSE;
 
-    // NOTIFYICON_VERSION_4 is prefered
-    nid.uVersion = NOTIFYICON_VERSION_4;
+    nid.uVersion = NOTIFYICON_VERSION;
     return Shell_NotifyIcon(NIM_SETVERSION, &nid);
 }
 

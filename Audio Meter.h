@@ -11,6 +11,8 @@
 #include <audioclient.h>
 #include <shared_mutex>
 #include <unordered_map>
+#include <unordered_set>
+#include <array>
 
 extern std::shared_mutex audioMutex;
 
@@ -19,8 +21,7 @@ extern std::shared_mutex audioMutex;
                 { (punk)->Release(); (punk) = NULL; }
 #define CUST_FLT_EPS (0.0001f)
 
-//L R C LFE BL BR
-enum CHANNELS : UINT
+enum CHANNELS : int
 {
     PADDING = 0,
     MONO,       //1.0
@@ -29,10 +30,28 @@ enum CHANNELS : UINT
     THREEOH,    //3.0
     THREEONE,   //3.1
     FOUROH,     //4.0
-    FOURONE,    //4.1 or 5.0
+    FOURONE,    //4.1
+	FIVEOH,     //5.0
     FIVEONE,    //5.1
+	SIXOH,      //6.0
+	SIXONE,     //6.1
+	SEVENOH,    //7.0
     SEVENONE,   //7.1
     INVALID     //
+};
+
+enum SPEAKER_IDX : int
+{
+    FL = 0,
+    FR,
+    FC,
+    LFE,
+    BL,
+    BR,
+    BC,
+    SL,
+    SR,
+    SPEAKER_COUNT
 };
 
 // Forward declarations of functions included in this code module:
@@ -45,6 +64,7 @@ BOOL                DeleteIcon();
 void                MainLoop();
 CHANNELS            CheckChannels(UINT channels, const std::vector<float>& peaks);
 CHANNELS            CheckChannelsMix(UINT channels, const std::vector<float>& peaks, const std::vector<DWORD>* channelMap);
+CHANNELS            CheckChannelsMixV2(UINT channels, const std::vector<float>& peaks, const std::vector<DWORD>* channelMap);
 void                StoreChannels(CHANNELS& channel_id, bool force = false);
 
 // The notification client class
